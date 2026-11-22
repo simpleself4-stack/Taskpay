@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TaskPay</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1a1d21;--muted:#6b7280;--accent:#2563eb;--good:#16a34a;--line:#e5e7eb}
+@media (prefers-color-scheme:dark){:root{--bg:#111418;--card:#1b1f25;--text:#f1f3f5;--muted:#9aa3ad;--accent:#60a5fa;--good:#4ade80;--line:#2a3038}}
+*{box-sizing:border-box}
+body{margin:0 auto;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,sans-serif;padding:16px;max-width:480px}
+h1{font-size:22px;margin:8px 0 4px}
+.muted{color:var(--muted);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+.bal{font-size:34px;font-weight:700;color:var(--good)}
+button{padding:12px 14px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:16px;font-weight:600;width:100%;margin-top:8px}
+button.opt{background:var(--bg);color:var(--text);border:1px solid var(--line);text-align:left;font-weight:500}
+button.ghost{background:none;color:var(--muted);border:1px solid var(--line)}
+button:disabled{opacity:.5}
+input{width:100%;padding:12px;margin-top:8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font-size:16px}
+.task{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
+.pill{background:var(--good);color:#fff;border-radius:20px;padding:2px 10px;font-size:13px;font-weight:600;white-space:nowrap}
+.task button{width:auto;margin:0;padding:8px 14px}
+.done{opacity:.45}
+.timer{font-weight:700;color:var(--accent);margin-bottom:8px}
+.me{font-weight:700}
+#msg{min-height:20px;font-size:14px;color:var(--good);margin-top:8px}
+#authMsg{min-height:20px;font-size:14px;color:#dc2626;margin-top:8px}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+</head>
+<body>
+<h1>⚡ TaskPay</h1>
+<div class="muted">Prototype with demo money. Nothing is paid out.</div>
+
+<div class="card" id="auth">
+  <div style="font-weight:600">Log in or create an account</div>
+  <input id="email" type="email" placeholder="Email" autocapitalize="none" autocomplete="email">
+  <input id="pw" type="password" placeholder="Password (6+ characters)">
+  <input id="uname" placeholder="Display name (for sign up)">
+  <button id="login">Log in</button>
+  <button id="signup" class="ghost">Create account</button>
+  <div id="authMsg"></div>
+</div>
+
+<div id="app" style="display:none">
+  <div class="card">
+    <div class="muted" id="who"></div>
+    <div class="muted">Your balance</div>
+    <div class="bal" id="bal">$0.00</div>
+    <div class="muted" id="limit"></div>
+    <button id="cash">Cash out (min $0.50)</button>
+    <div id="msg"></div>
+    <button id="logout" class="ghost">Log out</button>
+  </div>
+  <div id="view"></div>
+  <div class="card" id="board"></div>
+</div>
+
+<script>
+// 1. CONNECT: the URL and publishable key are safe to put in a web page.
+var SB_URL = 'https://fkdqzmlgdhrsmyyfvthr.supabase.co';
+var SB_KEY = 'sb_publishable_6Yxy8BaGQYxDRvIA2M_9KQ_k9Ip0MCu';
+var sb = supabase.createClient(SB_URL, SB_KEY);
+
+// 2. TASKS: what to show on screen. The server holds the real answers and rewards.
+var TASKS = [
+  {id:1, title:"Pick the best app name", q:"Which name suits a fitness app best?", o:["FitFlow","GymBuddy","SweatLab"], cents:5},
+  {id:2, title:"Quick poll", q:"How do you usually read the news?", o:["Phone","Computer","Print","TV"], cents:5},
+  {id:3, title:"Spot the category", q:"A banana belongs to which group?", o:["Fruit","Vegetable","Grain"], cents:3},
+  {id:4, title:"Rate a slogan", q:"“Fresh coffee, fast.” How catchy is it?", o:["Not at all","Okay","Very catchy"], cents:5},
+  {id:5, title:"Sentiment check", q:"“I love this phone!” Is that positive or negative?", o:["Positive","Negative"], cents:3},
+  {id:6, t:'type', title:"Type the answer", q:"What is the capital of France?", cents:4},
+  {id:7, t:'type', title:"Quick math", q:"What is 6 + 7?", cents:4},
+  {id:8, t:'tap', title:"Speed tap", q:"Tap the button 10 times before time runs out.", n:10, cents:5}
+];
+var CAP = 15, me = null, profile = null, doneIds = [], board = [];
+var current = null, timeLeft = 15, ticker = null;
+
+function $(id){ return document.getElementById(id); }
+function money(c){ return '$' + (c/100).toFixed(2); }
+function utcToday(){ return new Date().toISOString().slice(0,10); }
+function todayEarned(){ return (profile && profile.day === utcToday()) ? profile.today : 0; }
+
+// 3. LOAD DATA from the server, then redraw.
+async function refresh(){
+  if(!me) return;
+  var p = await sb.from('profiles').select('username,balance,today,day').eq('id', me.id).single();
+  if(p.data) profile = p.data;
+  var c = await sb.from('completions').select('task_id').eq('user_id', me.id).eq('day', utcToday());
+  doneIds = (c.data || []).map(function(r){ return r.task_id; });
+  var b = await sb.from('profiles').select('id,username,balance').order('balance', {ascending:false}).limit(10);
+  board = b.data || [];
+  render();
+}
+
+// 4. SCREEN
+function render(){
+  var inn = !!me;
+  $('auth').style.display = inn ? 'none' : 'block';
+  $('app').style.display = inn ? 'block' : 'none';
+  if(!inn) return;
+  var earned = todayEarned();
+  $('who').textContent = 'Signed in as ' + (profile ? profile.username : '...');
+  $('bal').textContent = money(profile ? profile.balance : 0);
+  $('cash').disabled = !profile || profile.balance < 50;
+  $('limit').textContent = 'Today: ' + money(earned) + ' of ' + money(CAP) + ' daily limit' + (earned >= CAP ? ' (reached, come back tomorrow)' : '');
+
+  var v = $('view');
+  v.innerHTML = '';
+  var card = document.createElement('div');
+  card.className = 'card';
+  if(current){
+    var tm = document.createElement('div');
+    tm.id = 'timer'; tm.className = 'timer';
+    tm.textContent = '⏱ ' + timeLeft + 's';
+    card.appendChild(tm);
+    var h = document.createElement('div');
+    h.style.fontWeight = '600';
+    h.textContent = current.q;
+    card.appendChild(h);
+    if(current.t === 'type'){
+      var inp = document.createElement('input');
+      inp.placeholder = 'Type your answer';
+      card.appendChild(inp);
+      var sub = document.createElement('button');
+      sub.textContent = 'Submit';
+      sub.onclick = function(){ submit(current, inp.value, true); };
+      card.appendChild(sub);
+    }
+    if(current.t === 'tap'){
+      var taps = 0;
+      var tb = document.createElement('button');
+      tb.textContent = 'Tap! 0 / ' + current.n;
+      tb.onclick = function(){
+        taps++;
+        tb.textContent = 'Tap! ' + taps + ' / ' + current.n;
+        if(taps >= current.n){ tb.disabled = true; submit(current, '', false); }
+      };
+      card.appendChild(tb);
+    }
+    (current.o || []).forEach(function(opt){
+      var b = document.createElement('button');
+      b.className = 'opt';
+      b.textContent = opt;
+      b.onclick = function(){ submit(current, opt, false); };
+      card.appendChild(b);
+    });
+  } else {
+    var t = document.createElement('div');
+    t.className = 'muted';
+    t.textContent = 'Available tasks';
+    card.appendChild(t);
+    TASKS.forEach(function(task){
+      var done = doneIds.indexOf(task.id) > -1;
+      var row = document.createElement('div');
+      row.className = 'task' + (done ? ' done' : '');
+      var left = document.createElement('div');
+      left.textContent = task.title;
+      var right = document.createElement('div');
+      var pill = document.createElement('span');
+      pill.className = 'pill';
+      pill.textContent = '+' + money(task.cents);
+      right.appendChild(pill);
+      if(!done){
+        var go = document.createElement('button');
+        go.textContent = 'Start';
+        go.style.marginLeft = '8px';
+        if(earned >= CAP) go.disabled = true;
+        go.onclick = function(){ startTask(task); };
+        right.appendChild(go);
+      }
+      row.appendChild(left); row.appendChild(right);
+      card.appendChild(row);
+    });
+  }
+  v.appendChild(card);
+
+  var bd = $('board');
+  bd.innerHTML = '<div class="muted">Leaderboard</div>';
+  board.forEach(function(r, i){
+    var row = document.createElement('div');
+    row.className = 'task' + (r.id === me.id ? ' me' : '');
+    var l = document.createElement('span');
+    l.textContent = (i+1) + '. ' + r.username + (r.id === me.id ? ' (you)' : '');
+    var val = document.createElement('span');
+    val.className = 'pill';
+    val.textContent = money(r.balance);
+    row.appendChild(l); row.appendChild(val); bd.appendChild(row);
+  });
+}
+
+// 5. TIMER
+function stopTimer(){ if(ticker){ clearInterval(ticker); ticker = null; } }
+function startTask(task){
+  if(todayEarned() >= CAP) return;
+  stopTimer();
+  current = task; timeLeft = 15;
+  $('msg').textContent = '';
+  render();
+  ticker = setInterval(function(){
+    timeLeft--;
+    var el = $('timer');
+    if(el) el.textContent = '⏱ ' + timeLeft + 's';
+    if(timeLeft <= 0){
+      stopTimer(); current = null;
+      $('msg').textContent = 'Time is up! Try the task again.';
+      render();
+    }
+  }, 1000);
+}
+
+// 6. FINISH A TASK: ask the server to check it and pay. The server decides.
+async function submit(task, answer, keepGoingIfWrong){
+  var r = await sb.rpc('complete_task', {p_task: task.id, p_answer: answer || ''});
+  if(r.error){ $('msg').textContent = 'Something went wrong: ' + r.error.message; return; }
+  if(!r.data.ok && r.data.msg === 'wrong' && keepGoingIfWrong){
+    $('msg').textContent = 'Not quite, try again.';
+    return;
+  }
+  stopTimer(); current = null;
+  if(r.data.ok) $('msg').textContent = 'Nice! You earned ' + money(r.data.paid) + '.';
+  else if(r.data.msg === 'limit') $('msg').textContent = 'Daily limit reached, come back tomorrow!';
+  else if(r.data.msg === 'done') $('msg').textContent = 'You already did that one today.';
+  else $('msg').textContent = 'No payout this time.';
+  await refresh();
+}
+
+// 7. ACCOUNTS: handled by Supabase, which stores passwords safely.
+$('signup').onclick = async function(){
+  var email = $('email').value.trim(), pw = $('pw').value, name = $('uname').value.trim();
+  if(!email || pw.length < 6){ $('authMsg').textContent = 'Enter an email and a password of 6+ characters.'; return; }
+  var r = await sb.auth.signUp({email: email, password: pw, options: {data: {username: name || email.split('@')[0]}}});
+  if(r.error){ $('authMsg').textContent = r.error.message; return; }
+  if(!r.data.session) $('authMsg').textContent = 'Check your email to confirm your account, then log in.';
+};
+$('login').onclick = async function(){
+  var r = await sb.auth.signInWithPassword({email: $('email').value.trim(), password: $('pw').value});
+  if(r.error) $('authMsg').textContent = r.error.message;
+};
+$('logout').onclick = async function(){
+  stopTimer(); current = null;
+  await sb.auth.signOut();
+};
+$('cash').onclick = function(){
+  $('msg').textContent = 'Demo only: a real app would send ' + money(profile.balance) + ' via a payment provider.';
+};
+
+sb.auth.onAuthStateChange(function(event, session){
+  me = session ? session.user : null;
+  if(me){ $('authMsg').textContent = ''; setTimeout(refresh, 0); }
+  else { profile = null; render(); }
+});
+</script>
+</body>
+</html>
