@@ -192,9 +192,11 @@ function render(){
 
 // 5. TIMER
 function stopTimer(){ if(ticker){ clearInterval(ticker); ticker = null; } }
-function startTask(task){
+async function startTask(task){
   if(todayEarned() >= CAP) return;
   stopTimer();
+  var s = await sb.rpc('start_task', {p_task: task.id});
+  if(s.error){ $('msg').textContent = 'Could not start: ' + s.error.message; return; }
   current = task; timeLeft = 15;
   $('msg').textContent = '';
   render();
@@ -222,6 +224,7 @@ async function submit(task, answer, keepGoingIfWrong){
   if(r.data.ok) $('msg').textContent = 'Nice! You earned ' + money(r.data.paid) + '.';
   else if(r.data.msg === 'limit') $('msg').textContent = 'Daily limit reached, come back tomorrow!';
   else if(r.data.msg === 'done') $('msg').textContent = 'You already did that one today.';
+  else if(r.data.msg === 'timing') $('msg').textContent = 'Too fast or too slow. Read the task and try again.';
   else $('msg').textContent = 'No payout this time.';
   await refresh();
 }
